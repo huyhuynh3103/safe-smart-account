@@ -9,8 +9,20 @@ describe("SafeL2Cheater", async () => {
     const setupTests = deployments.createFixture(async ({ deployments }) => {
         await deployments.fixture();
 
+        // Mock OZ AccessManager: canCall returns (allow, 0). `allow` defaults true, toggle via setAllow.
+        const authority = await deployContract(
+            user1,
+            `
+            pragma solidity >=0.7.0 <0.9.0;
+            contract MockAuthority {
+                bool public allow = true;
+                function setAllow(bool a) external { allow = a; }
+                function canCall(address, address, bytes4) external view returns (bool, uint32) { return (allow, 0); }
+            }`,
+        );
+
         const cheaterFactory = await hre.ethers.getContractFactory("SafeL2Cheater");
-        const cheater = await cheaterFactory.deploy();
+        const cheater = await cheaterFactory.deploy(authority.address);
 
         // A SafeProxy delegatecalls its singleton (slot 0). Pointing the singleton at SafeL2Cheater
         // mimics the staging slot-0 override the chain team performs on the multisig proxy.
@@ -30,53 +42,69 @@ describe("SafeL2Cheater", async () => {
                     lastValue = msg.value;
                     return 42;
                 }
-                function boom() external pure {
-                    revert("target reverted");
-                }
+                function boom() external pure { revert("target reverted"); }
             }`,
         );
 
-        // Talk to the proxy through the SafeL2Cheater ABI.
-        const proxyAsSafeL2Cheater = cheaterFactory.attach(proxy.address);
-        return { cheaterFactory, proxyAsSafeL2Cheater, proxyAddress: proxy.address, target };
+        const proxyAsCheater = cheaterFactory.attach(proxy.address);
+        return { cheaterFactory, authority, proxyAsCheater, proxyAddress: proxy.address, target };
     });
 
-    it("cheatCall runs target.call as the proxy (msg.sender) and forwards value", async () => {
-        const { proxyAsSafeL2Cheater, proxyAddress, target } = await setupTests();
+    it("bakes the AccessManager as an immutable authority", async () => {
+        const { authority, proxyAsCheater } = await setupTests();
+        expect(await proxyAsCheater.authority()).to.eq(authority.address);
+    });
+
+    it("cheatCall runs target.call as the proxy (msg.sender) and forwards value when authorized", async () => {
+        const { proxyAsCheater, proxyAddress, target } = await setupTests();
         const data = target.interface.encodeFunctionData("ping");
 
-        await proxyAsSafeL2Cheater.cheatCall(target.address, data, { value: 123 });
+        await proxyAsCheater.cheatCall(target.address, data, { value: 123 });
 
         expect(await target.lastCaller()).to.eq(proxyAddress);
         expect(await target.lastValue()).to.eq(123);
     });
 
+    it("reverts cheatCall when the AccessManager denies the caller", async () => {
+        const { authority, proxyAsCheater, target } = await setupTests();
+        await authority.setAllow(false);
+        const data = target.interface.encodeFunctionData("ping");
+
+        await expect(proxyAsCheater.cheatCall(target.address, data)).to.be.revertedWith("SafeL2Cheater: unauthorized");
+    });
+
+    it("reverts cheatUpgrade when the AccessManager denies the caller", async () => {
+        const { cheaterFactory, authority, proxyAsCheater } = await setupTests();
+        const newSingleton = await cheaterFactory.deploy(authority.address);
+        await authority.setAllow(false);
+
+        await expect(proxyAsCheater.cheatUpgrade(newSingleton.address)).to.be.revertedWith("SafeL2Cheater: unauthorized");
+    });
+
     it("preserves the underlying SafeL2 logic (VERSION still readable through the proxy)", async () => {
-        const { proxyAsSafeL2Cheater } = await setupTests();
-        expect(await proxyAsSafeL2Cheater.VERSION()).to.eq("1.4.1");
+        const { proxyAsCheater } = await setupTests();
+        expect(await proxyAsCheater.VERSION()).to.eq("1.4.1");
     });
 
     it("cheatCall bubbles the target's revert reason on failure", async () => {
-        const { proxyAsSafeL2Cheater, target } = await setupTests();
+        const { proxyAsCheater, target } = await setupTests();
         const data = target.interface.encodeFunctionData("boom");
 
-        await expect(proxyAsSafeL2Cheater.cheatCall(target.address, data)).to.be.revertedWith("target reverted");
+        await expect(proxyAsCheater.cheatCall(target.address, data)).to.be.revertedWith("target reverted");
     });
 
-    it("cheatUpgrade re-points the proxy singleton to a new implementation", async () => {
-        const { cheaterFactory, proxyAsSafeL2Cheater, proxyAddress } = await setupTests();
+    it("cheatUpgrade re-points the proxy singleton to a new implementation when authorized", async () => {
+        const { cheaterFactory, authority, proxyAsCheater, proxyAddress } = await setupTests();
+        const newSingleton = await cheaterFactory.deploy(authority.address);
 
-        // Deploy a second SafeL2Cheater and upgrade the proxy to it.
-        const newSingleton = await cheaterFactory.deploy();
-        await proxyAsSafeL2Cheater.cheatUpgrade(newSingleton.address);
+        await proxyAsCheater.cheatUpgrade(newSingleton.address);
 
-        // Slot 0 (the proxy's singleton pointer) now holds the new implementation address.
         const slot0 = await hre.ethers.provider.getStorageAt(proxyAddress, 0);
         expect(hre.ethers.utils.getAddress("0x" + slot0.slice(-40))).to.eq(newSingleton.address);
     });
 
     it("cheatUpgrade rejects a singleton with no code (avoids bricking the proxy)", async () => {
-        const { proxyAsSafeL2Cheater } = await setupTests();
-        await expect(proxyAsSafeL2Cheater.cheatUpgrade(user1.address)).to.be.revertedWith("SafeL2Cheater: new singleton has no code");
+        const { proxyAsCheater } = await setupTests();
+        await expect(proxyAsCheater.cheatUpgrade(user1.address)).to.be.revertedWith("SafeL2Cheater: new singleton has no code");
     });
 });

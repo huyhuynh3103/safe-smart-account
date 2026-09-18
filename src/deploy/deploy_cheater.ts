@@ -14,13 +14,19 @@ const deploy: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
     const { deployer } = await getNamedAccounts();
     const { deploy } = deployments;
 
+    // Address of the deployed OpenZeppelin AccessManager that gates cheatCall/cheatUpgrade.
+    const authority = process.env.ACCESS_MANAGER!;
+
     await deploy("SafeL2Cheater", {
         from: deployer,
-        args: [],
+        args: [authority],
         log: true,
         deterministicDeployment: !!process.env.DETERMINISTIC,
     });
 };
 
+// Only runs when explicitly asked for (--tags cheater) AND an AccessManager is provided. This keeps
+// it out of the default `deployments.fixture()` the test suite runs, which sets no ACCESS_MANAGER.
+deploy.skip = async () => !process.env.ACCESS_MANAGER;
 deploy.tags = ["cheater"];
 export default deploy;
