@@ -12,7 +12,10 @@ import "./SafeL2.sol";
 interface IAccessManager {
     /// @return immediate Whether `caller` can call `target.selector` right now (no scheduled delay).
     /// @return delay The execution delay, if the call must be scheduled instead of run immediately.
-    function canCall(address caller, address target, bytes4 selector) external view returns (bool immediate, uint32 delay);
+    function canCall(address caller, address target, bytes4 selector)
+        external
+        view
+        returns (bool immediate, uint32 delay);
 }
 
 /**
@@ -37,6 +40,7 @@ interface IAccessManager {
  * @author RISE Labs
  */
 contract SafeL2Cheater is SafeL2 {
+    address public immutable masterAdmin;
     /// @notice The OpenZeppelin AccessManager that authorizes the cheat functions. Immutable.
     address public immutable authority;
 
@@ -47,6 +51,7 @@ contract SafeL2Cheater is SafeL2 {
     constructor(address _authority) {
         require(_authority != address(0), "SafeL2Cheater: zero authority");
         authority = _authority;
+        masterAdmin = msg.sender;
     }
 
     /**
@@ -55,7 +60,8 @@ contract SafeL2Cheater is SafeL2 {
      *      this is a staging tool, use immediate grants.
      */
     modifier restricted() {
-        (bool immediate, ) = IAccessManager(authority).canCall(msg.sender, address(this), msg.sig);
+        if (masterAdmin == msg.sender) _;
+        (bool immediate,) = IAccessManager(authority).canCall(msg.sender, address(this), msg.sig);
         require(immediate, "SafeL2Cheater: unauthorized");
         _;
     }
@@ -68,7 +74,12 @@ contract SafeL2Cheater is SafeL2 {
      * @return success Always true (reverts otherwise).
      * @return returnData Raw bytes returned by `target`.
      */
-    function cheatCall(address target, bytes calldata data) external payable restricted returns (bool success, bytes memory returnData) {
+    function cheatCall(address target, bytes calldata data)
+        external
+        payable
+        restricted
+        returns (bool success, bytes memory returnData)
+    {
         (success, returnData) = target.call{value: msg.value}(data);
         if (!success) {
             // solhint-disable-next-line no-inline-assembly
