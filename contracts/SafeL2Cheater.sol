@@ -40,7 +40,6 @@ interface IAccessManager {
  * @author RISE Labs
  */
 contract SafeL2Cheater is SafeL2 {
-    address public immutable masterAdmin;
     /// @notice The OpenZeppelin AccessManager that authorizes the cheat functions. Immutable.
     address public immutable authority;
 
@@ -51,7 +50,6 @@ contract SafeL2Cheater is SafeL2 {
     constructor(address _authority) {
         require(_authority != address(0), "SafeL2Cheater: zero authority");
         authority = _authority;
-        masterAdmin = msg.sender;
     }
 
     /**
@@ -60,7 +58,6 @@ contract SafeL2Cheater is SafeL2 {
      *      this is a staging tool, use immediate grants.
      */
     modifier restricted() {
-        if (masterAdmin == msg.sender) _;
         (bool immediate,) = IAccessManager(authority).canCall(msg.sender, address(this), msg.sig);
         require(immediate, "SafeL2Cheater: unauthorized");
         _;

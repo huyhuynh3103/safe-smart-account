@@ -37,9 +37,11 @@ describe("SafeL2Cheater", async () => {
             contract Target {
                 address public lastCaller;
                 uint256 public lastValue;
+                uint256 public calls;
                 function ping() external payable returns (uint256) {
                     lastCaller = msg.sender;
                     lastValue = msg.value;
+                    calls += 1;
                     return 42;
                 }
                 function boom() external pure { revert("target reverted"); }
@@ -63,6 +65,16 @@ describe("SafeL2Cheater", async () => {
 
         expect(await target.lastCaller()).to.eq(proxyAddress);
         expect(await target.lastValue()).to.eq(123);
+    });
+
+    // Regression: a `restricted` modifier with more than one `_` placeholder inlines the body twice,
+    // which silently double-spends msg.value and breaks any non-idempotent payload (e.g. a reinitializer).
+    it("cheatCall executes the payload exactly once", async () => {
+        const { proxyAsCheater, target } = await setupTests();
+
+        await proxyAsCheater.cheatCall(target.address, target.interface.encodeFunctionData("ping"));
+
+        expect(await target.calls()).to.eq(1);
     });
 
     it("reverts cheatCall when the AccessManager denies the caller", async () => {
