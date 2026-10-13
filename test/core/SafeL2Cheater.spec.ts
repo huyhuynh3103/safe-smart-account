@@ -119,4 +119,34 @@ describe("SafeL2Cheater", async () => {
         const { proxyAsCheater } = await setupTests();
         await expect(proxyAsCheater.cheatUpgrade(user1.address)).to.be.revertedWith("SafeL2Cheater: new singleton has no code");
     });
+
+    it("cheatDelegateCall runs target code in the proxy's storage context", async () => {
+        const { proxyAsCheater, proxyAddress } = await setupTests();
+
+        // Writer stores to slot 99 of whatever context it runs in. A plain call would hit the Writer's
+        // own storage; a delegatecall hits the PROXY's, proving the DelegateCall semantics.
+        const writer = await deployContract(
+            user1,
+            `
+            pragma solidity >=0.7.0 <0.9.0;
+            contract Writer {
+                function write(uint256 v) external { assembly { sstore(99, v) } }
+            }`,
+        );
+        const data = writer.interface.encodeFunctionData("write", [0xdead]);
+
+        await proxyAsCheater.cheatDelegateCall(writer.address, data);
+
+        const slot99 = await hre.ethers.provider.getStorageAt(proxyAddress, 99);
+        expect(hre.ethers.BigNumber.from(slot99)).to.eq(0xdead);
+        expect(hre.ethers.BigNumber.from(await hre.ethers.provider.getStorageAt(writer.address, 99))).to.eq(0);
+    });
+
+    it("reverts cheatDelegateCall when the AccessManager denies the caller", async () => {
+        const { authority, proxyAsCheater, target } = await setupTests();
+        await authority.setAllow(false);
+        const data = target.interface.encodeFunctionData("ping");
+
+        await expect(proxyAsCheater.cheatDelegateCall(target.address, data)).to.be.revertedWith("SafeL2Cheater: unauthorized");
+    });
 });

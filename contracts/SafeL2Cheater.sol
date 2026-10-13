@@ -87,6 +87,34 @@ contract SafeL2Cheater is SafeL2 {
     }
 
     /**
+     * @notice Delegatecalls `data` into `target` from the proxy's context (i.e. as the multisig), the
+     *         `Operation.DelegateCall` counterpart of {cheatCall}. Use it to run a MultiSend batch the
+     *         way a normal Safe tx would.
+     * @dev `target` runs in THIS proxy's storage, so it can rewrite any slot (owners, singleton, ...).
+     *      That is strictly more powerful than {cheatCall}; it is still only as safe as the AccessManager.
+     *      `payable` so `msg.value` reaches `target`; delegatecall has no separate value argument.
+     *      Reverts and bubbles the target's revert data on failure.
+     * @param target Address whose code to delegatecall.
+     * @param data Calldata to run.
+     * @return success Always true (reverts otherwise).
+     * @return returnData Raw bytes returned by `target`.
+     */
+    function cheatDelegateCall(address target, bytes calldata data)
+        external
+        payable
+        restricted
+        returns (bool success, bytes memory returnData)
+    {
+        (success, returnData) = target.delegatecall(data);
+        if (!success) {
+            // solhint-disable-next-line no-inline-assembly
+            assembly {
+                revert(add(returnData, 0x20), mload(returnData))
+            }
+        }
+    }
+
+    /**
      * @notice Re-points this proxy's singleton (slot 0) to `newSingleton`, upgrading the staging Safe.
      * @dev Runs via delegatecall from the proxy, so `sstore(0, newSingleton)` overwrites the proxy's
      *      own `singleton` pointer. Requires code at `newSingleton` to avoid bricking the proxy.
